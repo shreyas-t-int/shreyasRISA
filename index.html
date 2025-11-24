@@ -1,0 +1,841 @@
+import React, { useState, useEffect } from 'react';
+import { Target, Shield, Users, Activity, Check, X, Zap, Database, TrendingUp, Mail, RefreshCw, Sparkles, MessageSquare, ExternalLink, Clock, Map, Network, FileText, ChevronDown, ChevronUp, Send, UserPlus } from 'lucide-react';
+
+// --- GEMINI API UTILITIES ---
+const apiKey = "AIzaSyBqwN-vaLAd2ks6MmtTF5g0uWmxKmLSUa4"; // Injected by environment
+
+const callGemini = async (prompt) => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }]
+  };
+
+  let attempts = 0;
+  while (attempts < 3) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed.";
+    } catch (error) {
+      attempts++;
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempts))); 
+      if (attempts === 3) return "AI Service Unavailable";
+    }
+  }
+};
+
+// --- MOCK DATA GENERATORS ---
+const FIRST_NAMES = ["Dr. Elena", "Marcus", "Sarah", "Rajiv", "Dr. James", "Emily", "Michael", "Dr. Sarah", "David", "Jessica", "Aisha", "Wei"];
+const LAST_NAMES = ["Ross", "Thorne", "Jenkins", "Patel", "O'Connell", "Chen", "Dubois", "Kim", "Gupta", "Santos"];
+const ROLES = [
+  { title: "Chief of Oncology", tier: "Tier 1", type: "CLINICIAN" },
+  { title: "General Partner", tier: "Tier 1", type: "INVESTOR" },
+  { title: "Sales Associate", tier: "Tier 3", type: "SALES" },
+  { title: "VP Strategy", tier: "Tier 1", type: "EXEC" },
+  { title: "Head of Research", tier: "Tier 1", type: "CLINICIAN" },
+  { title: "Student Intern", tier: "Tier 3", type: "STUDENT" },
+  { title: "Director of Innovation", tier: "Tier 2", type: "EXEC" },
+  { title: "Clinical Lead", tier: "Tier 2", type: "CLINICIAN" },
+  { title: "Angel Investor", tier: "Tier 2", type: "INVESTOR" }
+];
+const ORGS = ["MSKCC", "Greylock Bio", "HealthCo", "UHG", "Mayo Clinic", "Salesforce", "Pfizer", "Stanford Health", "Andreessen Horowitz", "Mount Sinai"];
+const SOURCES = ["PubMed", "Crunchbase", "Apollo", "Inbound", "LinkedIn", "NIH RePORTER"];
+const APP_ANSWERS = [
+  "Looking to find Series B lead investors for our new radiomics platform.",
+  "I want to learn about AI.",
+  "Connecting with other C-level execs about value-based care models.",
+  "My boss told me to come.",
+  "Interested in how generative AI impacts CAR-T trials.",
+  "Networking.",
+  "Our hospital is deploying a new oncology LLM, need best practices."
+];
+
+const generateRandomLead = (id) => {
+  const firstName = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)];
+  const lastName = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
+  const roleObj = ROLES[Math.floor(Math.random() * ROLES.length)];
+  const org = ORGS[Math.floor(Math.random() * ORGS.length)];
+  const source = SOURCES[Math.floor(Math.random() * SOURCES.length)];
+  const answer = APP_ANSWERS[Math.floor(Math.random() * APP_ANSWERS.length)];
+
+  let profileUrl = "#";
+  if (source === "PubMed") profileUrl = `https://pubmed.ncbi.nlm.nih.gov/?term=${lastName}+${firstName}`;
+  else if (source === "Crunchbase") profileUrl = `https://www.crunchbase.com/textsearch?q=${encodeURIComponent(org)}`;
+  else if (source === "LinkedIn") profileUrl = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(firstName + " " + lastName)}`;
+  else if (source === "NIH RePORTER") profileUrl = "https://reporter.nih.gov/";
+  else if (source === "Apollo") profileUrl = "https://www.apollo.io/";
+
+  return {
+    id: id,
+    name: `${firstName} ${lastName}`,
+    title: roleObj.title,
+    org: org,
+    source: source,
+    profileUrl: profileUrl,
+    applicationAnswer: answer,
+    status: "Pending",
+    waterfallStatus: "Idle", 
+    hook: "Waiting for Gemini...",
+    type: roleObj.type,
+    tier: roleObj.tier
+  };
+};
+
+// --- COMPONENTS ---
+
+const ClusterMap = ({ attendees }) => {
+  const clusters = attendees.reduce((acc, curr) => {
+    if (!acc[curr.org]) acc[curr.org] = [];
+    acc[curr.org].push(curr);
+    return acc;
+  }, {});
+
+  const orgs = Object.keys(clusters).filter(org => clusters[org].length > 1);
+
+  return (
+    <div className="relative w-full h-80 bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+         <div className="w-full h-full opacity-10" style={{backgroundImage: 'radial-gradient(#4b5563 1px, transparent 1px)', backgroundSize: '20px 20px'}}></div>
+      </div>
+      
+      <div className="absolute top-4 left-4 z-10">
+        <h4 className="text-white font-bold text-sm flex items-center gap-2"><Network size={14} className="text-emerald-400"/> Live Cluster Map</h4>
+        <p className="text-slate-500 text-xs">Visualizing multi-attendee organizations</p>
+      </div>
+
+      <div className="w-full h-full flex items-center justify-center p-8">
+        {orgs.length === 0 ? (
+           <p className="text-slate-600 text-sm">No clusters detected yet.</p>
+        ) : (
+          <div className="flex gap-12 flex-wrap justify-center items-center">
+             {orgs.map((org, i) => (
+               <div key={org} className="relative group cursor-pointer">
+                  <div className="w-16 h-16 rounded-full bg-slate-800 border-2 border-purple-500 flex items-center justify-center z-10 relative shadow-lg shadow-purple-900/50">
+                    <span className="text-[10px] text-center font-bold text-white leading-tight px-1">{org}</span>
+                  </div>
+                  {clusters[org].map((attendee, idx) => {
+                    const angle = (idx / clusters[org].length) * 2 * Math.PI;
+                    const radius = 60;
+                    const x = Math.cos(angle) * radius;
+                    const y = Math.sin(angle) * radius;
+                    return (
+                      <div key={attendee.id} className="absolute w-8 h-8 rounded-full bg-slate-700 border border-slate-500 flex items-center justify-center top-1/2 left-1/2 -mt-4 -ml-4 transition-all duration-500" 
+                           style={{ transform: `translate(${x}px, ${y}px)` }}>
+                         <span className="text-[8px] text-slate-300">{attendee.name.charAt(0)}</span>
+                         <div className="absolute w-16 h-0.5 bg-slate-700 -z-10 origin-center top-1/2 left-1/2" 
+                              style={{ width: `${radius}px`, transform: `translate(-50%, -50%) rotate(${angle * (180/Math.PI)}deg) translate(${radius/2}px, 0)` }}></div>
+                      </div>
+                    )
+                  })}
+                  <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 bg-emerald-900/80 text-emerald-200 text-[10px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                    Cluster Detected: Offer Group Seating
+                  </div>
+               </div>
+             ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const EmailPreviewModal = ({ lead, onClose }) => {
+  const [senderEmail, setSenderEmail] = useState("growth@risalabs.com");
+  const [recipientEmail, setRecipientEmail] = useState(`${lead.name.split(' ')[0].toLowerCase()}@${lead.org.toLowerCase().replace(/\s/g, '')}.com`);
+
+  const handleSend = () => {
+    // Construct the mailto link
+    const subject = "Invitation: Elite Oncology Summit @ RISA";
+    const body = `Hi ${lead.name.split(' ')[0]},
+
+${lead.hook}
+
+Given your role at ${lead.org}, I thought you would be interested in joining a curated group of 500 leaders across oncology, investment, and payer strategy.
+
+We are filtering strictly for decision-makers and active researchers. No vendors, no noise.
+
+Can I send over the guest list?
+
+Best,
+The RISA Team`;
+
+    const mailtoLink = `mailto:${recipientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    
+    // Open the user's email client
+    window.location.href = mailtoLink;
+    
+    // Close modal after triggering
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fadeIn">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden text-slate-900">
+        <div className="bg-slate-100 border-b px-6 py-4 flex justify-between items-center">
+           <h3 className="font-bold text-slate-700 flex items-center gap-2"><Mail size={16}/> Email Preview: {lead.type} Sequence</h3>
+           <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X size={20}/></button>
+        </div>
+        <div className="p-8 space-y-6">
+           <div className="space-y-2 text-sm">
+              {/* Sender Email Field */}
+              <div className="flex items-center border-b border-slate-200 pb-2">
+                 <span className="w-20 text-slate-500">From:</span>
+                 <input 
+                    type="text" 
+                    value={senderEmail}
+                    onChange={(e) => setSenderEmail(e.target.value)}
+                    className="font-medium text-slate-900 bg-transparent outline-none flex-1 placeholder:text-slate-400"
+                    placeholder="Enter sender email"
+                 />
+              </div>
+              {/* Recipient Email Field (Editable for Testing) */}
+              <div className="flex items-center border-b border-slate-200 pb-2">
+                 <span className="w-20 text-slate-500">To:</span>
+                 <input 
+                    type="text" 
+                    value={recipientEmail}
+                    onChange={(e) => setRecipientEmail(e.target.value)}
+                    className="font-medium text-slate-900 bg-transparent outline-none flex-1 placeholder:text-slate-400"
+                    placeholder="Enter recipient email"
+                 />
+              </div>
+              <div className="flex border-b border-slate-200 pb-2">
+                 <span className="w-20 text-slate-500">Subject:</span>
+                 <span className="font-medium text-slate-900">Invitation: Elite Oncology Summit @ RISA</span>
+              </div>
+           </div>
+           
+           <div className="text-slate-700 leading-relaxed space-y-4 font-serif">
+              <p>Hi {lead.name.split(' ')[0]},</p>
+              
+              <div className="bg-purple-50 border-l-4 border-purple-500 p-4 rounded-r">
+                 <p className="text-purple-900 font-medium italic">"{lead.hook}"</p>
+                 <p className="text-[10px] text-purple-400 mt-2 uppercase font-sans tracking-wider">AI Generated Hook (Chameleon Engine)</p>
+              </div>
+
+              <p>Given your role at {lead.org}, I thought you would be interested in joining a curated group of 500 leaders across oncology, investment, and payer strategy.</p>
+              <p>We are filtering strictly for decision-makers and active researchers. No vendors, no noise.</p>
+              <p>Can I send over the guest list?</p>
+              
+              <p>Best,<br/>The RISA Team</p>
+           </div>
+        </div>
+        <div className="bg-slate-50 px-6 py-4 border-t flex justify-end gap-3">
+           <button onClick={onClose} className="px-4 py-2 text-slate-600 font-medium hover:bg-slate-200 rounded-lg transition-colors">Edit</button>
+           <button onClick={handleSend} className="px-6 py-2 bg-purple-600 text-white font-medium rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 shadow-lg shadow-purple-500/20">
+              <Send size={16}/> Approve & Dispatch
+           </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const LiveActivityFeed = () => {
+    const [activities, setActivities] = useState([
+        { id: 1, text: "Dr. Elena Ross used her +1 invite for Dr. James Chen.", time: "2m ago", type: "referral" },
+        { id: 2, text: "Waitlist Alert: 5 new qualified leads added to queue.", time: "5m ago", type: "alert" },
+        { id: 3, text: "Cluster Detected: 3 Executives from Mayo Clinic.", time: "12m ago", type: "cluster" },
+    ]);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+             const newActs = [
+                 { id: Date.now(), text: "New VIP Confirmation: Sarah Jenkins (Tier 1).", time: "Just now", type: "rsvp" },
+                 { id: Date.now() + 1, text: "Marcus Thorne forwarded invite to Partner.", time: "Just now", type: "referral" }
+             ];
+             const pick = newActs[Math.floor(Math.random() * newActs.length)];
+             setActivities(prev => [pick, ...prev].slice(0, 5));
+        }, 8000);
+        return () => clearInterval(interval);
+    }, []);
+
+    return (
+        <div className="bg-slate-900 rounded-xl border border-slate-800 p-4 h-full">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2"><Activity size={14}/> Live Steward Feed</h3>
+            <div className="space-y-4">
+                {activities.map(act => (
+                    <div key={act.id} className="flex gap-3 items-start animate-slideIn">
+                        <div className={`mt-1 w-2 h-2 rounded-full ${act.type === 'referral' ? 'bg-purple-400' : act.type === 'cluster' ? 'bg-emerald-400' : 'bg-blue-400'}`}></div>
+                        <div>
+                            <p className="text-sm text-slate-300 leading-snug">{act.text}</p>
+                            <p className="text-[10px] text-slate-500 mt-1">{act.time}</p>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+const App = () => {
+  const [activeTab, setActiveTab] = useState('hunter');
+  const [viewMode, setViewMode] = useState('list');
+  const [processing, setProcessing] = useState(false);
+  const [analyzingJudge, setAnalyzingJudge] = useState(false);
+  const [judgeRationale, setJudgeRationale] = useState("");
+  const [hunterLeads, setHunterLeads] = useState([]);
+  const [gatekeeperQueue, setGatekeeperQueue] = useState([]);
+  const [vipAttendees, setVipAttendees] = useState([]); 
+  
+  // New States
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [dossiers, setDossiers] = useState({});
+  const [generatingDossier, setGeneratingDossier] = useState(false);
+  const [previewEmailLead, setPreviewEmailLead] = useState(null);
+
+  // Initialize data
+  useEffect(() => {
+    const initial = Array.from({ length: 3 }, (_, i) => generateRandomLead(i + 1));
+    const preEnriched = initial.map(l => {
+      // Generate realistic mock hooks for the initial state so previews look good
+      let mockHook = "Read your recent paper on CAR-T efficacy...";
+      if (l.type === "INVESTOR") mockHook = "Saw your firm's recent Series B bet in MediGen...";
+      if (l.type === "EXEC") mockHook = `Noticed ${l.org}'s new strategic partnership with UnitedHealth...`;
+      if (l.type === "SALES") mockHook = "Saw you are expanding the sales team in the Northeast...";
+
+      return { 
+        ...l, 
+        status: "Enriched", 
+        waterfallStatus: "Found ✅",
+        hook: mockHook 
+      };
+    });
+    setHunterLeads(preEnriched);
+  }, []);
+
+  const [metrics, setMetrics] = useState({
+    totalLeads: 1240,
+    qualified: 312,
+    rsvpRate: "42%",
+    referrals: 89
+  });
+
+  // --- ACTIONS ---
+
+  const generateGeminiHooks = async (leads) => {
+    const updatedLeads = [...leads];
+    await Promise.all(updatedLeads.map(async (lead) => {
+      const prompt = `Role: Growth Marketing AI. Task: Write a hyper-personalized, 15-word cold email hook. Prospect: ${lead.name}, ${lead.title} at ${lead.org}. Source: ${lead.source}. Context: "AI in Oncology" summit. Output: Just the hook.`;
+      const hook = await callGemini(prompt);
+      lead.hook = hook.replace(/"/g, ''); 
+      lead.status = "Enriched ✨";
+    }));
+    return updatedLeads;
+  };
+
+  const getGeminiVerdict = async (candidate) => {
+    setAnalyzingJudge(true);
+    const prompt = `
+      Role: Event Gatekeeper AI.
+      Task: Rationale for accepting/rejecting (100-pt scale).
+      Candidate: ${candidate.name}, ${candidate.title}, ${candidate.org}.
+      Application Answer: "${candidate.applicationAnswer}".
+      Score: ${candidate.score}.
+      Verdict: ${candidate.score >= 80 ? "ACCEPT" : candidate.score < 60 ? "REJECT" : "WAITLIST"}.
+      Output: 1 sentence as "The Gatekeeper", referencing their intent and seniority.
+    `;
+    const rationale = await callGemini(prompt);
+    setJudgeRationale(rationale);
+    setAnalyzingJudge(false);
+  };
+
+  const generateLeadDossier = async (lead) => {
+    if (dossiers[lead.id]) {
+        setExpandedLeadId(expandedLeadId === lead.id ? null : lead.id);
+        return;
+    }
+    
+    setExpandedLeadId(lead.id);
+    setGeneratingDossier(true);
+    
+    const prompt = `
+        Role: Intelligence Officer for RISA Labs.
+        Subject: ${lead.name}, ${lead.title} @ ${lead.org}.
+        Source: ${lead.source}.
+        Task: Provide a brief strategic dossier on why we should target this individual for our Elite Oncology Summit.
+        Format: 2 short, punchy bullet points.
+        Tone: Professional, high-stakes, exclusive.
+    `;
+    
+    const briefing = await callGemini(prompt);
+    setDossiers(prev => ({...prev, [lead.id]: briefing}));
+    setGeneratingDossier(false);
+  };
+
+  const simulateWaterfall = async (leads) => {
+     const sources = ["Apollo", "Dropcontact", "PubMed", "Verification"];
+     for (const lead of leads) {
+        setHunterLeads(prev => prev.map(p => p.id === lead.id ? { ...p, waterfallStatus: `Checking ${sources[0]}...` } : p));
+        await new Promise(r => setTimeout(r, 400));
+        setHunterLeads(prev => prev.map(p => p.id === lead.id ? { ...p, waterfallStatus: `Checking ${sources[1]}...` } : p));
+        await new Promise(r => setTimeout(r, 400));
+        setHunterLeads(prev => prev.map(p => p.id === lead.id ? { ...p, waterfallStatus: "Found ✅" } : p));
+     }
+  };
+
+  const runEnrichment = async () => {
+    setProcessing(true);
+    const newLeadsCount = 2; 
+    const currentMaxId = Math.max(...hunterLeads.map(l => l.id), 0);
+    const newLeads = Array.from({ length: newLeadsCount }, (_, i) => generateRandomLead(currentMaxId + i + 1));
+    
+    setHunterLeads(prev => [...newLeads, ...prev]);
+
+    await simulateWaterfall(newLeads);
+
+    const enrichedLeads = await generateGeminiHooks(newLeads);
+    setHunterLeads(prev => prev.map(l => {
+      const found = enrichedLeads.find(el => el.id === l.id);
+      return found ? found : l;
+    }));
+    
+    setProcessing(false);
+
+    const leadsToGatekeep = enrichedLeads.map(l => {
+      let score = 50; 
+      if (l.type === "CLINICIAN" || l.type === "EXEC" || l.type === "INVESTOR") score += 30;
+      if (l.tier === "Tier 1") score += 20;
+      if (l.type === "STUDENT") score = 10;
+      if (l.type === "SALES") score = 15;
+      score = Math.min(100, Math.max(0, score + Math.floor(Math.random() * 20) - 10)); 
+
+      return {
+        id: l.id + 1000,
+        name: l.name,
+        title: l.title,
+        org: l.org,
+        score: score,
+        tier: l.tier,
+        applicationAnswer: l.applicationAnswer,
+        tags: [l.type, l.source]
+      };
+    });
+    
+    setGatekeeperQueue(prev => [...prev, ...leadsToGatekeep]);
+  };
+
+  const handleApprove = (lead) => {
+    setGatekeeperQueue(prev => prev.filter(p => p.id !== lead.id));
+    setMetrics(prev => ({ ...prev, qualified: prev.qualified + 1 }));
+    setJudgeRationale("");
+    setVipAttendees(prev => [...prev, lead]);
+  };
+
+  const handleWaitlist = (id) => {
+    setGatekeeperQueue(prev => prev.filter(p => p.id !== id));
+    setJudgeRationale("");
+  };
+
+  const handleReject = (id) => {
+    setGatekeeperQueue(prev => prev.filter(p => p.id !== id));
+    setJudgeRationale("");
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-purple-500 selection:text-white">
+      {/* HEADER */}
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-purple-900/20">
+              <Zap className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="font-bold text-lg tracking-tight text-white">Velvet Rope <span className="text-purple-400">v2.5</span></h1>
+              <p className="text-xs text-slate-500 font-mono">GROWTH AGENT // RISA LABS</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-6 text-sm font-medium">
+             <div className="flex gap-2 items-center text-emerald-400 bg-emerald-400/10 px-3 py-1 rounded-full border border-emerald-400/20">
+                <Activity size={14} />
+                <span className="animate-pulse">System Active</span>
+             </div>
+          </div>
+        </div>
+      </header>
+
+      {/* MODALS */}
+      {previewEmailLead && (
+         <EmailPreviewModal lead={previewEmailLead} onClose={() => setPreviewEmailLead(null)} />
+      )}
+
+      {/* MAIN LAYOUT */}
+      <main className="max-w-7xl mx-auto px-6 py-8 grid grid-cols-12 gap-8">
+        
+        {/* SIDEBAR NAVIGATION */}
+        <nav className="col-span-2 space-y-2">
+          <button 
+            onClick={() => setActiveTab('hunter')}
+            className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 transition-all duration-200 ${activeTab === 'hunter' ? 'bg-slate-800 text-white shadow-lg ring-1 ring-slate-700' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'}`}
+          >
+            <Database size={18} />
+            <span className="font-medium">The Hunter</span>
+            {hunterLeads.length > 0 && <span className="ml-auto text-slate-500 text-xs font-mono">{hunterLeads.length}</span>}
+          </button>
+          <button 
+            onClick={() => setActiveTab('gatekeeper')}
+            className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 transition-all duration-200 ${activeTab === 'gatekeeper' ? 'bg-slate-800 text-white shadow-lg ring-1 ring-slate-700' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'}`}
+          >
+            <Shield size={18} />
+            <span className="font-medium">The Gatekeeper</span>
+            {gatekeeperQueue.length > 0 && <span className="ml-auto bg-purple-600 text-white text-[10px] px-2 py-0.5 rounded-full">{gatekeeperQueue.length}</span>}
+          </button>
+          <button 
+            onClick={() => setActiveTab('steward')}
+            className={`w-full text-left px-4 py-3 rounded-xl flex items-center gap-3 transition-all duration-200 ${activeTab === 'steward' ? 'bg-slate-800 text-white shadow-lg ring-1 ring-slate-700' : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'}`}
+          >
+            <TrendingUp size={18} />
+            <span className="font-medium">The Steward</span>
+          </button>
+        </nav>
+
+        {/* CONTENT AREA */}
+        <section className="col-span-10 bg-slate-900/50 rounded-2xl border border-slate-800 p-6 min-h-[600px] shadow-2xl relative overflow-hidden">
+          
+          {/* BACKGROUND GLOW */}
+          <div className="absolute top-0 right-0 w-96 h-96 bg-purple-600/5 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20"></div>
+
+          {/* VIEW: HUNTER */}
+          {activeTab === 'hunter' && (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-2xl font-bold text-white mb-1">Outbound Data Waterfall</h2>
+                  <p className="text-slate-400 text-sm">Sources: PubMed, Crunchbase, Apollo, NIH RePORTER</p>
+                </div>
+                <div className="flex gap-3">
+                  <div className="bg-slate-900 rounded-lg p-1 border border-slate-700 flex">
+                     <button onClick={() => setViewMode('list')} className={`px-3 py-1 text-xs font-medium rounded transition-colors ${viewMode === 'list' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>List</button>
+                     <button onClick={() => setViewMode('dispatch')} className={`px-3 py-1 text-xs font-medium rounded transition-colors ${viewMode === 'dispatch' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}>Dispatch Queue</button>
+                  </div>
+                  <button 
+                    onClick={runEnrichment}
+                    disabled={processing}
+                    className="bg-purple-600 hover:bg-purple-500 text-white px-5 py-2 rounded-lg font-medium transition-all flex items-center gap-2 shadow-lg shadow-purple-900/20 disabled:opacity-50"
+                  >
+                    {processing ? <RefreshCw className="animate-spin" size={18}/> : <Zap size={18}/>}
+                    {processing ? "Hunting..." : "Run Global Refresh"}
+                  </button>
+                </div>
+              </div>
+
+              {viewMode === 'list' ? (
+                <div className="overflow-hidden rounded-xl border border-slate-700/50 bg-slate-900">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-800/50 text-slate-400 uppercase text-xs font-semibold tracking-wider">
+                      <tr>
+                        <th className="px-6 py-4">Prospect</th>
+                        <th className="px-6 py-4">Source Waterfall</th>
+                        <th className="px-6 py-4">Status</th>
+                        <th className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-purple-400">
+                            <Sparkles size={14}/> AI Hook (Chameleon)
+                          </div>
+                        </th>
+                        <th className="px-6 py-4"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {hunterLeads.map((lead) => (
+                        <React.Fragment key={lead.id}>
+                          <tr 
+                            className={`hover:bg-slate-800/30 transition-colors cursor-pointer ${expandedLeadId === lead.id ? 'bg-slate-800/40' : ''}`}
+                            onClick={() => generateLeadDossier(lead)}
+                          >
+                            <td className="px-6 py-4 font-medium text-white">
+                              {lead.name}
+                              <div className="text-slate-500 text-xs font-normal">{lead.title} @ {lead.org}</div>
+                            </td>
+                            <td className="px-6 py-4">
+                              {lead.waterfallStatus === "Found ✅" ? (
+                                <a 
+                                  href={lead.profileUrl} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer" 
+                                  onClick={(e) => e.stopPropagation()} 
+                                  className="group flex items-center gap-2 w-fit hover:opacity-80 transition-opacity"
+                                >
+                                  <span className={`px-2 py-1 rounded text-xs border transition-colors ${lead.source === 'PubMed' ? 'bg-blue-500/10 border-blue-500/20 text-blue-400' : lead.source === 'Crunchbase' ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-slate-700/30 border-slate-600 text-slate-400'}`}>
+                                    {lead.source} verified
+                                  </span>
+                                  <ExternalLink size={12} className="text-slate-500 group-hover:text-white" />
+                                </a>
+                              ) : (
+                                <span className="text-xs font-mono text-amber-400 animate-pulse">{lead.waterfallStatus}</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4">
+                               {lead.status.includes('Enriched') ? 
+                                 <div className="flex items-center gap-1 text-emerald-400"><Check size={14}/> {lead.status}</div> : 
+                                 <div className="flex items-center gap-1 text-amber-400"><Activity size={14}/> Processing</div>
+                               }
+                            </td>
+                            <td className="px-6 py-4 text-slate-400 italic max-w-xs truncate">
+                              "{lead.hook}"
+                            </td>
+                            <td className="px-6 py-4 text-slate-500">
+                                {expandedLeadId === lead.id ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+                            </td>
+                          </tr>
+                          {expandedLeadId === lead.id && (
+                             <tr className="bg-slate-800/20 animate-fadeIn">
+                                <td colSpan={5} className="px-6 py-4">
+                                   <div className="flex gap-4">
+                                       <div className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-4 relative overflow-hidden">
+                                          <div className="absolute top-0 left-0 w-1 h-full bg-purple-500"></div>
+                                          <h4 className="text-xs font-bold text-purple-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                            <FileText size={12}/> Strategic Dossier
+                                          </h4>
+                                          {generatingDossier && !dossiers[lead.id] ? (
+                                            <div className="flex items-center gap-2 text-slate-400 text-sm animate-pulse">
+                                                <Sparkles size={14}/> Generating Briefing with Gemini...
+                                            </div>
+                                          ) : (
+                                            <div className="text-sm text-slate-300 space-y-2 whitespace-pre-line">
+                                                {dossiers[lead.id]}
+                                            </div>
+                                          )}
+                                       </div>
+                                       
+                                       <button 
+                                          onClick={(e) => { e.stopPropagation(); setPreviewEmailLead(lead); }}
+                                          className="flex flex-col items-center justify-center p-6 bg-slate-700/30 border border-slate-600 rounded-lg hover:bg-slate-700/50 hover:border-purple-500/50 transition-all group"
+                                       >
+                                           <Mail size={24} className="text-slate-400 group-hover:text-purple-400 mb-2"/>
+                                           <span className="text-xs font-bold text-slate-300 group-hover:text-white">Preview Email</span>
+                                       </button>
+                                   </div>
+                                </td>
+                             </tr>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-4">
+                  {/* Dispatch Blocks */}
+                  {["CLINICIAN", "EXEC", "INVESTOR"].map(type => (
+                      <div key={type} className="bg-slate-900 rounded-xl p-4 border border-slate-800">
+                        <h3 className={`text-sm font-bold uppercase mb-3 flex items-center gap-2 ${type === 'CLINICIAN' ? 'text-emerald-400' : type === 'EXEC' ? 'text-blue-400' : 'text-amber-400'}`}>
+                            <Clock size={14}/> {type} Block
+                        </h3>
+                        <div className="space-y-2">
+                           {hunterLeads.filter(l => l.type === type).slice(0, 3).map(l => (
+                             <div key={l.id} className="bg-slate-800 p-2 rounded text-xs border border-slate-700 flex justify-between">
+                                <span>{l.name}</span>
+                                <span className="text-slate-500">Queued</span>
+                             </div>
+                           ))}
+                        </div>
+                      </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* VIEW: GATEKEEPER */}
+          {activeTab === 'gatekeeper' && (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex justify-between items-center mb-8">
+                <div>
+                  <h2 className="text-2xl font-bold text-white mb-1">The AI Gatekeeper</h2>
+                  <p className="text-slate-400 text-sm">Scoring Model: 100-Point Healthcare Scale</p>
+                </div>
+                <div className="flex gap-4">
+                   <div className="text-right">
+                      <p className="text-xs text-slate-500 uppercase">Waitlist</p>
+                      <p className="font-mono text-amber-400 font-bold">30 - 59 pts</p>
+                   </div>
+                   <div className="text-right">
+                      <p className="text-xs text-slate-500 uppercase">VIP Threshold</p>
+                      <p className="font-mono text-emerald-400 font-bold">&gt; 60 pts</p>
+                   </div>
+                </div>
+              </div>
+
+              {gatekeeperQueue.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 text-slate-500 border-2 border-dashed border-slate-800 rounded-xl">
+                  <Check className="w-12 h-12 mb-4 text-emerald-500" />
+                  <p>Queue Cleared. Waiting for Hunter Engine...</p>
+                  <button onClick={() => setActiveTab('hunter')} className="mt-4 text-purple-400 text-sm hover:underline">Go to Hunter</button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Active Card */}
+                  <div className="bg-slate-800/50 rounded-2xl p-6 border border-slate-700 relative overflow-hidden group">
+                     {/* Score Color Strip */}
+                     <div className={`absolute top-0 left-0 w-1 h-full ${gatekeeperQueue[0].score >= 60 ? 'bg-emerald-500' : gatekeeperQueue[0].score >= 30 ? 'bg-amber-500' : 'bg-red-500'}`}></div>
+                     
+                     <div className="flex justify-between items-start mb-6">
+                        <div>
+                          <h3 className="text-2xl font-bold text-white">{gatekeeperQueue[0].name}</h3>
+                          <p className="text-lg text-purple-300">{gatekeeperQueue[0].title}</p>
+                          <p className="text-slate-400 text-sm mt-1">{gatekeeperQueue[0].org}</p>
+                        </div>
+                        <div className="bg-slate-900 rounded-lg p-3 text-center border border-slate-700">
+                          <p className="text-xs text-slate-500 uppercase tracking-widest mb-1">Score</p>
+                          <p className={`text-3xl font-bold ${gatekeeperQueue[0].score >= 60 ? 'text-emerald-400' : gatekeeperQueue[0].score >= 30 ? 'text-amber-400' : 'text-red-400'}`}>{gatekeeperQueue[0].score}</p>
+                        </div>
+                     </div>
+
+                     <div className="mb-6">
+                        <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 font-bold">Application Response</p>
+                        <div className="bg-slate-900/80 p-3 rounded border border-slate-700 text-sm text-slate-300 italic">
+                            "{gatekeeperQueue[0].applicationAnswer}"
+                        </div>
+                     </div>
+
+                     <div className="space-y-3 mb-8">
+                        {gatekeeperQueue[0].tags.map(tag => (
+                          <div key={tag} className="flex justify-between items-center text-sm p-2 bg-slate-900/50 rounded border border-slate-800">
+                             <span className="text-slate-300">{tag}</span>
+                             <span className="text-emerald-500 font-mono text-xs">Detected</span>
+                          </div>
+                        ))}
+                     </div>
+
+                     {/* GEMINI JUDGE ACTION */}
+                     {judgeRationale ? (
+                        <div className="mb-6 p-4 bg-purple-900/20 border border-purple-500/30 rounded-lg animate-fadeIn">
+                          <div className="flex items-center gap-2 mb-2 text-purple-400 text-xs font-bold uppercase tracking-wider">
+                            <Sparkles size={12} /> The Judge's Verdict
+                          </div>
+                          <p className="text-sm text-slate-200 italic">"{judgeRationale}"</p>
+                        </div>
+                     ) : (
+                        <button 
+                          onClick={() => getGeminiVerdict(gatekeeperQueue[0])}
+                          disabled={analyzingJudge}
+                          className="w-full mb-6 py-2 rounded-lg bg-slate-700/30 text-slate-300 hover:bg-slate-700/50 hover:text-white transition-all text-xs font-medium flex items-center justify-center gap-2"
+                        >
+                          {analyzingJudge ? <RefreshCw className="animate-spin" size={12}/> : <MessageSquare size={12}/>}
+                          {analyzingJudge ? "Consulting Rubric..." : "Ask Gemini Judge for Rationale"}
+                        </button>
+                     )}
+
+                     {/* DYNAMIC ACTIONS BASED ON SCORE */}
+                     <div className="grid grid-cols-2 gap-4">
+                        <button 
+                          onClick={() => handleReject(gatekeeperQueue[0].id)}
+                          className="w-full py-3 rounded-lg border border-slate-600 text-slate-400 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/50 transition-all font-medium flex items-center justify-center gap-2"
+                        >
+                          <X size={18} /> Reject
+                        </button>
+                        
+                        {gatekeeperQueue[0].score >= 60 ? (
+                          <button 
+                            onClick={() => handleApprove(gatekeeperQueue[0])}
+                            className="w-full py-3 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:shadow-lg hover:shadow-purple-500/25 transition-all font-medium flex items-center justify-center gap-2"
+                          >
+                            <Check size={18} /> Approve VIP
+                          </button>
+                        ) : gatekeeperQueue[0].score >= 30 ? (
+                           <button 
+                            onClick={() => handleWaitlist(gatekeeperQueue[0].id)}
+                            className="w-full py-3 rounded-lg bg-amber-600/20 border border-amber-600/50 text-amber-400 hover:bg-amber-600/40 transition-all font-medium flex items-center justify-center gap-2"
+                          >
+                            <Clock size={18} /> Waitlist
+                          </button>
+                        ) : (
+                           <button 
+                            className="w-full py-3 rounded-lg bg-slate-800 text-slate-500 cursor-not-allowed font-medium flex items-center justify-center gap-2"
+                            disabled
+                          >
+                            Ineligible
+                          </button>
+                        )}
+                     </div>
+                  </div>
+
+                  {/* Context / Logic Display */}
+                  <div className="bg-slate-900 rounded-2xl p-6 border border-slate-800 text-sm font-mono text-slate-400">
+                     <div className="mb-4 text-xs uppercase text-slate-500 font-sans font-bold tracking-wider">Live Logic Log</div>
+                     <div className="space-y-2">
+                        <p>&gt; Identifying Persona...</p>
+                        <p className="text-purple-400">&gt; Identified: {gatekeeperQueue[0].tags[0]}</p>
+                        <p>&gt; Analyzing Intent...</p>
+                        <p className="text-slate-300 italic">"&gt; {gatekeeperQueue[0].applicationAnswer.substring(0, 30)}..."</p>
+                        <p>&gt; Checking Industry Tier...</p>
+                        <p className="text-emerald-400">&gt; {gatekeeperQueue[0].tier} Detected</p>
+                        <p>&gt; Calculating Score...</p>
+                        <p className={gatekeeperQueue[0].score >= 60 ? "text-emerald-400" : gatekeeperQueue[0].score >= 30 ? "text-amber-400" : "text-red-400"}>&gt; Score Finalized: {gatekeeperQueue[0].score}/100</p>
+                     </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* VIEW: STEWARD */}
+          {activeTab === 'steward' && (
+             <div className="space-y-6 animate-fadeIn">
+               <h2 className="text-2xl font-bold text-white mb-6">Growth Loop Analytics</h2>
+               
+               <div className="grid grid-cols-12 gap-6">
+                  <div className="col-span-8 grid grid-cols-3 gap-6">
+                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+                        <div className="flex items-center gap-3 mb-4 text-slate-400">
+                            <Users size={20} />
+                            <span className="text-sm font-medium">Total Qualified</span>
+                        </div>
+                        <p className="text-4xl font-bold text-white">{metrics.qualified}</p>
+                        <p className="text-xs text-emerald-400 mt-2 flex items-center gap-1"><TrendingUp size={12}/> +12% this week</p>
+                    </div>
+                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
+                        <div className="flex items-center gap-3 mb-4 text-slate-400">
+                            <Mail size={20} />
+                            <span className="text-sm font-medium">RSVP Rate</span>
+                        </div>
+                        <p className="text-4xl font-bold text-purple-400">{metrics.rsvpRate}</p>
+                        <p className="text-xs text-slate-500 mt-2">Industry avg: 15%</p>
+                    </div>
+                    <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-4 opacity-10">
+                            <Users size={64} />
+                        </div>
+                        <div className="flex items-center gap-3 mb-4 text-slate-400">
+                            <Zap size={20} />
+                            <span className="text-sm font-medium">Viral Loop</span>
+                        </div>
+                        <p className="text-4xl font-bold text-emerald-400">+{metrics.referrals}</p>
+                        <p className="text-xs text-slate-500 mt-2">"Plus-One" Attendees</p>
+                    </div>
+                  </div>
+                  
+                  <div className="col-span-4">
+                     <LiveActivityFeed />
+                  </div>
+               </div>
+
+               <div className="mt-8">
+                  <ClusterMap attendees={[
+                    ...vipAttendees,
+                    // Mock existing attendees for cluster demo
+                    {id: 901, name: "Dr. A. Smith", org: "MSKCC"}, 
+                    {id: 902, name: "Dr. B. Jones", org: "MSKCC"},
+                    {id: 903, name: "M. Chen", org: "Greylock Bio"},
+                    {id: 904, name: "J. Doe", org: "Greylock Bio"},
+                    {id: 905, name: "L. Wei", org: "Greylock Bio"},
+                  ]} />
+               </div>
+             </div>
+          )}
+
+        </section>
+      </main>
+    </div>
+  );
+};
+
+export default App;
